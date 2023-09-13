@@ -2095,8 +2095,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pallet-rbac"
-version = "0.0.1"
+name = "pallet-call-rbac"
+version = "0.1.0"
 dependencies = [
  "env_logger",
  "frame-benchmarking",

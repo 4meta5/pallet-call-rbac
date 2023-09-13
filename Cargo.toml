@@ -1,12 +1,11 @@
 [package]
-name = "pallet-rbac"
-authors = [ "Amar Singh" ]
-description = "A pallet for role-based access control"
+name = "pallet-call-rbac"
+authors = [ "Amar Singh <asinghchrony@protonmail.com>" ]
+description = "A pallet implementing role-based access control to call dispatch from origins"
 edition = "2021"
-homepage = "https://analog.one"
 license = "GPLv3.0"
 publish = false
-version = "0.0.1"
+version = "0.1.0"
 
 [dependencies]
 codec = { package = "parity-scale-codec", version = "3.6", default-features = false, features = [
