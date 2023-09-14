@@ -26,6 +26,6 @@ This prototype aspires to be bug-free and maintainable rather than demonstrate i
 
 ## Dangerous?
 
-It is dangerous in the wrong hands. If `SuperUser` is centralized or compromised, then they can execute any call from any origin using this pallet. For this reason, 
+It is dangerous in the wrong hands. If `SuperUser` is centralized or compromised, then they can execute any call from any origin using this pallet.
 
-**It is highly encouraged to assign `SuperUser` to `EnsureRoot`.** By making this assignment, users ensure chains governance can react to attacks by compromised `Admin` or `Executer` by either revoking access and clearing the allowed calls for the compromised access level.
+**It is highly encouraged to assign `SuperUser` to `EnsureRoot`.** This assignment ensures that governance can react to attacks by either revoking access or clearing the allowed calls for the compromised access level.

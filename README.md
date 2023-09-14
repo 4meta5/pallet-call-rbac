@@ -39,8 +39,6 @@ This pallet is useful for managing access to restricted calls. Use cases include
 
 ## Usage Instructions
 
-> `tests/calls::execute_call_works_for_executor_not_admin` also demonstrates the user flow enumerated below.
-
 1. Set the calls accessible to the `Executer`s for an access level.
 
 Call `set_calls(roleId: u64, calls: Vec<CallAndOrigin>)` to set the calls (`Vec<CallAndOrigin>`) accessible to accounts that are `Executer`s for the access level (`u64`).
@@ -57,13 +55,15 @@ Call `grant_access(roleId: u64, who: AccountId, role: Role::Executor)` using the
 
 Call `execute_call(call: RuntimeCall)`. This must be called by an account that is an `Executor` for a `roleId` with access to the input `call: RuntimeCall`.
 
+`tests/calls::execute_call_works_for_executor_not_admin` demonstrates the flow described above.
+
 ## Free Call RBAC
 
 It is often useful to not require users to pay fees for every transaction.
 
 The current implementation may be extended to support RBAC for free/discounted calls. Each `roleId` would require a funded derivative account. This account may be used to store funds for refunding `Executer`s that use `execute_call` to dispatch  its calls. 
 
-This extension is tracked in [issue #5](https://github.com/4meta5/pallet-call-rbac/issues/5).
+Progress tracked in [issue #5](https://github.com/4meta5/pallet-call-rbac/issues/5).
 
 ## References
 1. [`pallet_utility::dispatch_as`](https://docs.rs/pallet-utility/latest/pallet_utility/pallet/enum.Call.html#variant.dispatch_as) has the same functionality of dispatching the input call from the input origin, but access to this extrinsic is less flexible and less configurable (sender origin must be `EnsureRoot`).
