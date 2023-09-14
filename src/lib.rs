@@ -1,10 +1,14 @@
 //! # Call Role-Based Access Control
 //!
-//! This pallet implements role-based access control over
-//! dispatchable calls. The configured `SuperUser` sets the list of calls+origins available to an access level (`id`). Within each access level, there are 2 roles:
+//! This pallet implements role-based access control to dispatchable calls.
+//!
+//! `SuperUser` has 2 main responsibilities:
+//! 1. Set calls+origins available for each access level.
+//! 2. Set the Admin(s) for each access level.
+//!
+//! For each access level (`RoleId`), there are 2 roles:
 //! 1. **Admin**: may add/remove accounts to the `Executor` role for the access level
 //! 2. **Executor**: may execute dispatchable calls accessible to the access level
-//! Only the `SuperUser` has the authority to add/remove accounts to the `Admin` role for any access level.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use codec::{Decode, Encode};
@@ -13,31 +17,30 @@ pub use pallet::*;
 use scale_info::TypeInfo;
 
 #[cfg(test)]
-mod mock;
-#[cfg(test)]
 mod tests;
 
-// Any runtime call can be encoded into two bytes which represent the pallet and call index.
-// We use this to uniquely match a user call with calls permitted for the user.
-type CallIndex = (u8, u8);
-
+/// Distinct roles that never overlap, but this can be circumvented by Admin.
+/// Any Admin can easily assign themselves as an Executer under a new AccountId
+/// controlled by them.
 #[derive(PartialEq, Eq, Copy, Clone, MaxEncodedLen, Encode, Decode, TypeInfo, RuntimeDebug)]
 pub enum Role {
     Executer,
     Admin,
 }
 
+/// Call alongside its origin
 #[derive(PartialEq, Eq, Clone, MaxEncodedLen, Encode, Decode, TypeInfo, RuntimeDebug)]
 pub struct CallOrigin<Call, Origin> {
     pub call: Call,
     pub origin: Origin,
 }
 
+/// Return dispatch origin for call iff call is permitted for who
 pub trait ValidateCall<T: pallet::Config> {
     fn validate_call(
         who: &T::AccountId,
         call: &<T as Config>::RuntimeCall,
-    ) -> Result<<T as Config>::RuntimeOrigin, DispatchError>;
+    ) -> Option<<T as Config>::RuntimeOrigin>;
 }
 
 #[frame_support::pallet]
@@ -47,7 +50,7 @@ pub mod pallet {
     use frame_support::traits::{CallerTrait, OriginTrait};
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::Dispatchable;
-    use sp_std::{collections::btree_set::BTreeSet, vec::Vec};
+    use sp_std::vec::Vec;
 
     #[pallet::pallet]
     #[pallet::without_storage_info]
@@ -75,6 +78,8 @@ pub mod pallet {
         }
     }
 
+    pub type RoleId = u64;
+    /// Call alongside its dispatch origin.
     pub type CallAndOrigin<T> =
         CallOrigin<<T as Config>::RuntimeCall, <T as Config>::PalletsOrigin>;
 
@@ -112,25 +117,23 @@ pub mod pallet {
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
         /// Id granted Account access defined by Role
-        AccessGranted(u64, T::AccountId, Role),
+        AccessGranted(RoleId, T::AccountId, Role),
         /// Id revoked Account access defined by Role
-        AccessRevoked(u64, T::AccountId, Role),
+        AccessRevoked(RoleId, T::AccountId, Role),
         /// Id granted access to calls
-        CallsUpdated(u64),
+        CallsUpdated(RoleId),
     }
 
     #[pallet::error]
     pub enum Error<T> {
         /// A role does not exist in storage
         AccessDNE,
-        /// Invalid call
-        InvalidCall,
+        /// Call not permitted to user
+        CallNotPermitted,
         /// Admin only grants access to Executer role
         AdminOnlyGrantsExecuterAccess,
         /// Admin only revokes access to Executer role
         AdminOnlyRevokesExecuterAccess,
-        /// Only super can set admin
-        OnlySuperSetsAdmin,
         /// Access can be granted only if it does not exist
         AlreadyGrantedAccess,
         /// Caller is not admin
@@ -148,7 +151,7 @@ pub mod pallet {
     pub type Roles<T: Config> = StorageDoubleMap<
         _,
         Blake2_128Concat,
-        u64,
+        RoleId,
         Blake2_128Concat,
         T::AccountId,
         Role,
@@ -157,18 +160,27 @@ pub mod pallet {
 
     /// Account, Id => Option<()>
     #[pallet::storage]
-    pub type Permissions<T: Config> =
-        StorageDoubleMap<_, Blake2_128Concat, T::AccountId, Blake2_128Concat, u64, (), OptionQuery>;
+    pub type Permissions<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        T::AccountId,
+        Blake2_128Concat,
+        RoleId,
+        (),
+        OptionQuery,
+    >;
 
-    /// Id => Vec<CallIndex>
+    /// Id, Call => Option<Origin>
     #[pallet::storage]
-    pub type AllowedCalls<T: Config> =
-        StorageMap<_, Blake2_128Concat, u64, Vec<CallIndex>, ValueQuery>;
-
-    /// CallIndex => Origin
-    #[pallet::storage]
-    pub type CallOrigins<T: Config> =
-        StorageMap<_, Blake2_128Concat, CallIndex, <T as Config>::PalletsOrigin, OptionQuery>;
+    pub type CallOrigins<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        RoleId,
+        Blake2_128Concat,
+        <T as Config>::RuntimeCall,
+        <T as Config>::PalletsOrigin,
+        OptionQuery,
+    >;
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
@@ -179,7 +191,7 @@ pub mod pallet {
         #[pallet::weight(T::WeightInfo::grant_access())]
         pub fn grant_access(
             origin: OriginFor<T>,
-            id: u64,
+            id: RoleId,
             who: T::AccountId,
             role: Role,
         ) -> DispatchResult {
@@ -206,7 +218,11 @@ pub mod pallet {
         /// Only succeeds if (i) the caller is SuperUser or (ii) the caller is an `id` Admin and `who` is an `id` Executor.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::revoke_access())]
-        pub fn revoke_access(origin: OriginFor<T>, id: u64, who: T::AccountId) -> DispatchResult {
+        pub fn revoke_access(
+            origin: OriginFor<T>,
+            id: RoleId,
+            who: T::AccountId,
+        ) -> DispatchResult {
             let is_admin_not_super = Self::ensure_origin(origin, id)?;
             let role = Roles::<T>::get(id, &who).ok_or(Error::<T>::AccessDNE)?;
             if is_admin_not_super {
@@ -223,13 +239,13 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Set calls accessible to Executors of the input `id`
-        /// Calls must be passed in with their respective dispatch origins
+        /// Set dispatchable calls accessible to Executors of the input `id`.
+        /// Calls are passed in with their respective dispatch origins.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::set_calls(calls.len() as u32))]
         pub fn set_calls(
             origin: OriginFor<T>,
-            id: u64,
+            id: RoleId,
             calls: Vec<CallAndOrigin<T>>,
         ) -> DispatchResult {
             T::SuperUser::ensure_origin(origin)?;
@@ -237,12 +253,16 @@ pub mod pallet {
                 calls.len() <= T::MaxCalls::get() as usize,
                 Error::<T>::TooManyCalls
             );
-            AllowedCalls::<T>::insert(id, Self::calls_to_indices(&calls)?);
+            let _ = CallOrigins::<T>::clear_prefix(id, u32::MAX, None);
+            for CallOrigin { call, origin } in calls.into_iter() {
+                CallOrigins::<T>::insert(id, call, origin);
+            }
             Self::deposit_event(Event::CallsUpdated(id));
             Ok(())
         }
 
-        /// Dispatch call from its origin iff caller is a member of Executor for an Id that has access to the call.
+        /// Dispatch call from its origin iff caller is a member of Executor
+        /// for an Id that has access to the call.
         #[pallet::call_index(3)]
         #[pallet::weight(
 			T::WeightInfo::execute_call()
@@ -252,9 +272,10 @@ pub mod pallet {
             origin: OriginFor<T>,
             call: Box<<T as Config>::RuntimeCall>,
         ) -> DispatchResult {
-            let who = ensure_signed(origin.clone())?;
-            let dispatch_origin = T::ValidateCall::validate_call(&who, &call)?;
-            call.dispatch(dispatch_origin).map_err(|e| e.error)?;
+            let who = ensure_signed(origin)?;
+            let from =
+                T::ValidateCall::validate_call(&who, &call).ok_or(Error::<T>::CallNotPermitted)?;
+            call.dispatch(from).map_err(|e| e.error)?;
             Ok(())
         }
     }
@@ -265,48 +286,23 @@ pub mod pallet {
         fn validate_call(
             who: &T::AccountId,
             call: &<T as Config>::RuntimeCall,
-        ) -> Result<<T as Config>::RuntimeOrigin, DispatchError> {
-            let Ok(call_index) = Self::call_to_index(call) else {
-                return Err(Error::<T>::EncodingFailed.into());
-            };
+        ) -> Option<<T as Config>::RuntimeOrigin> {
             for (id, _) in Permissions::<T>::iter_prefix(&who) {
-                if AllowedCalls::<T>::get(id).contains(&call_index) {
-                    let origin =
-                        CallOrigins::<T>::get(&call_index).ok_or(Error::<T>::CallOriginNotSet)?;
-                    return Ok(origin.into());
+                if let Some(origin) = CallOrigins::<T>::get(id, call) {
+                    return Some(origin.into());
                 }
             }
-            Err(Error::<T>::InvalidCall.into())
+            None
         }
     }
     // Private functions
     impl<T: Config> Pallet<T> {
-        /// Converts a vector of calls into a vector of call indices.
-        /// Inserts origin into storage for every call index.
-        fn calls_to_indices(calls: &[CallAndOrigin<T>]) -> Result<Vec<CallIndex>, DispatchError> {
-            let mut indices = BTreeSet::new();
-            for CallOrigin { call, origin } in calls.into_iter() {
-                let index = Self::call_to_index(call)?;
-                if indices.insert(index) {
-                    CallOrigins::<T>::insert(index, origin);
-                }
-            }
-            Ok(indices.into_iter().collect())
-        }
-        /// Convert a call to call indices by encoding the call and taking the first two bytes.
-        fn call_to_index(call: &<T as Config>::RuntimeCall) -> Result<CallIndex, DispatchError> {
-            let encoded_call = call.encode();
-            if encoded_call.len() < 2 {
-                return Err(Error::<T>::EncodingFailed.into());
-            }
-            Ok((encoded_call[0], encoded_call[1]))
-        }
         /// Ensures origin is SuperUser or an id Admin.
         /// Returns:
         /// Ok(true) if an id Admin (and not a super user)
         /// Ok(false) if super user
         /// Err(e) if neither super nor id Admin
-        fn ensure_origin(origin: OriginFor<T>, id: u64) -> Result<bool, DispatchError> {
+        fn ensure_origin(origin: OriginFor<T>, id: RoleId) -> Result<bool, DispatchError> {
             if let Err(e) = T::SuperUser::ensure_origin(origin.clone()) {
                 let caller = ensure_signed(origin)?;
                 let Some(role) = Roles::<T>::get(id, caller) else {
@@ -322,15 +318,14 @@ pub mod pallet {
     // Public functions (i.e. RuntimeAPI)
     impl<T: Config> Pallet<T> {
         /// Return allowed calls for input account
-        pub fn get_allowed_calls(who: &T::AccountId) -> Vec<CallIndex> {
-            let mut allowed_calls = BTreeSet::new();
+        pub fn get_allowed_calls(who: &T::AccountId) -> Vec<<T as Config>::RuntimeCall> {
+            let mut allowed_calls = Vec::new();
             for (id, _) in Permissions::<T>::iter_prefix(&who) {
-                let calls = AllowedCalls::<T>::get(id);
-                for c in calls {
-                    allowed_calls.insert(c);
+                for (call, _) in CallOrigins::<T>::iter_prefix(id) {
+                    allowed_calls.push(call);
                 }
             }
-            allowed_calls.into_iter().collect()
+            allowed_calls
         }
     }
 }
