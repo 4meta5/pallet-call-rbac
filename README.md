@@ -22,4 +22,3 @@ If you started reading this and immediately thought "uh-oh this is not a good id
 * managing deployment and upgrades for smart contracts
 * temporarily granting access to specific functions i.e. decentralized hedge fund granting limited trade functionality to its traders
 * delegating access to free calls such that caller is refunded via pot
-# lil-homey

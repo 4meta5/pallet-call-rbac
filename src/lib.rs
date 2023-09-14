@@ -1,5 +1,10 @@
-// # Role-Based Access Control Pallet
-//
+//! # Call Role-Based Access Control
+//!
+//! This pallet implements role-based access control over
+//! dispatchable calls. The configured `SuperUser` sets the list of calls+origins available to an access level (`id`). Within each access level, there are 2 roles:
+//! 1. **Admin**: may add/remove accounts to the `Executor` role for the access level
+//! 2. **Executor**: may execute dispatchable calls accessible to the access level
+//! Only the `SuperUser` has the authority to add/remove accounts to the `Admin` role for any access level.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use codec::{Decode, Encode};
@@ -7,13 +12,13 @@ use frame_support::pallet_prelude::*;
 pub use pallet::*;
 use scale_info::TypeInfo;
 
-// #[cfg(test)]
-// mod mock;
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod mock;
+#[cfg(test)]
+mod tests;
 
 // Any runtime call can be encoded into two bytes which represent the pallet and call index.
-// We use this to uniquely match a user call with calls permitted for the user
+// We use this to uniquely match a user call with calls permitted for the user.
 type CallIndex = (u8, u8);
 
 #[derive(PartialEq, Eq, Copy, Clone, MaxEncodedLen, Encode, Decode, TypeInfo, RuntimeDebug)]
@@ -167,6 +172,9 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
+        /// For input `who` grants access to calls allowed by Executors of input `id`
+        /// Only succeeds if (i) the caller is SuperUser or (ii) the caller is an `id` Admin and `who` is an `id` Executor
+        /// Fails if `who` already occupies a role for `id`
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::grant_access())]
         pub fn grant_access(
@@ -194,6 +202,8 @@ pub mod pallet {
             Ok(())
         }
 
+        /// For input `who` revoke access to calls allowed by Executors of input `id`
+        /// Only succeeds if (i) the caller is SuperUser or (ii) the caller is an `id` Admin and `who` is an `id` Executor.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::revoke_access())]
         pub fn revoke_access(origin: OriginFor<T>, id: u64, who: T::AccountId) -> DispatchResult {
@@ -213,6 +223,8 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set calls accessible to Executors of the input `id`
+        /// Calls must be passed in with their respective dispatch origins
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::set_calls(calls.len() as u32))]
         pub fn set_calls(
@@ -225,12 +237,12 @@ pub mod pallet {
                 calls.len() <= T::MaxCalls::get() as usize,
                 Error::<T>::TooManyCalls
             );
-            // TODO: clean up old CallOrigins unused elsewhere
             AllowedCalls::<T>::insert(id, Self::calls_to_indices(&calls)?);
             Self::deposit_event(Event::CallsUpdated(id));
             Ok(())
         }
 
+        /// Dispatch call from its origin iff caller is a member of Executor for an Id that has access to the call.
         #[pallet::call_index(3)]
         #[pallet::weight(
 			T::WeightInfo::execute_call()
@@ -291,9 +303,9 @@ pub mod pallet {
         }
         /// Ensures origin is SuperUser or an id Admin.
         /// Returns:
-        /// Ok(true) if an id Admin
+        /// Ok(true) if an id Admin (and not a super user)
         /// Ok(false) if super user
-        /// Err(e) if neither
+        /// Err(e) if neither super nor id Admin
         fn ensure_origin(origin: OriginFor<T>, id: u64) -> Result<bool, DispatchError> {
             if let Err(e) = T::SuperUser::ensure_origin(origin.clone()) {
                 let caller = ensure_signed(origin)?;
